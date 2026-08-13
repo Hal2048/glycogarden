@@ -1,60 +1,100 @@
-# Team Fudan 2026 Software
+# GlycoGarden
 
-If your team competes in the [**Software & AI** village](https://villages.igem.org) or wants to
-apply for the [**Best Software** award](https://competition.igem.org/judging/awards/special), you **MUST** host all the
-source code of your team's software tool in this repository, `main` branch. By the **Wiki Freeze**, a
-[release](https://docs.gitlab.com/ee/user/project/releases/) will be automatically created as the judging artifact of
-this software tool. You will be able to keep working on your software after the Grand Jamboree.
+GlycoGarden is Fudan iGEM 2026's interactive simulator for exploring how promoter strength and Golgi-compartment enzyme localization affect predicted N-glycoform profiles.
 
-See the [Software Project](https://teams.igem.org/go/deliverables/software) page for the full requirements (including the
-open-source license requirement; note that **Software & AI** village teams are not eligible for the Best Software award).
+This repository is self-contained: the browser interface, Flask API, precomputed data, and the model runtime required by the API are all included. The complete research notebooks and broader modeling record live in the separate [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model).
 
-> If your team does not have any software tool, you can totally ignore this repository. If left unchanged, this
-repository will be automatically deleted by the end of the season.
+## Architecture
 
-> **Using an AI assistant (e.g. Claude Code)?** Please read [.claude/RESPONSIBLE_AI_USE.md](.claude/RESPONSIBLE_AI_USE.md) first. You remain fully responsible for everything you commit: don't misrepresent what your tool does, never commit secrets, and review every change.
+```text
+frontend/       Vue 3 and ECharts browser interface
+backend/        Flask API, validation, caching, and static-file server
+model_core/     Minimal N-glycosylation model runtime used by the API
+data/           Output location for optional precomputed preset results
+MODELING.md     Scientific modeling description
+```
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might
-be unfamiliar with (for example your team wiki). A list of Features or a Background subsection can also be added here.
-If there are alternatives to your project, this is a good place to list differentiating factors.
+The frontend calls `/api/config` and `/api/predict`. The backend validates and normalizes every enzyme's four-compartment distribution, then calls `model_core` to solve the steady-state glycosylation model.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew.
-However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing
-specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a
-specific context like a particular programming language version or operating system or has dependencies that have to be
-installed manually, also add a Requirements subsection.
+## Requirements
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of
-usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably
-include in the README.
+- Python 3.10 or newer
+- A supported version of NumPy and SciPy
+- Node.js is optional and is only needed for the frontend unit test
 
-## Data and large files
-Keep this repository for **source code**. For datasets, machine-learning model weights, large media, and other heavy
-artifacts, use [Zenodo](https://teams.igem.org/go/deliverables/software/zenodo) — it gives each upload a citable DOI and
-is the recommended long-term archive for iGEM teams. Reference your Zenodo records from this README so judges and future
-teams can find them.
+## Run locally
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+Clone the repository and run:
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started.
-Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps
-explicit. These instructions could also be useful to your future self.
+```bash
+python -m venv .venv
+```
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce
-the likelihood that the changes inadvertently break something. Having instructions for running tests is especially
-helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+Activate the virtual environment:
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+```bash
+# Linux/macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+Install the dependencies and start the application:
+
+```bash
+pip install -r backend/requirements.txt
+python backend/app.py
+```
+
+Open <http://localhost:5000>. No second repository or external model path is required.
+
+## Run with Docker
+
+```bash
+docker build -t glycogarden .
+docker run --rm -p 5000:5000 glycogarden
+```
+
+Then open <http://localhost:5000>.
+
+## Prediction API
+
+`POST /api/predict` requires a promoter level and the complete distribution of every configured enzyme. Retrieve the public configuration first with `GET /api/config`.
+
+```json
+{
+  "promoter": "base",
+  "enzymeDistribution": {
+    "ManI": {"CGC": 0.05, "MGC": 0.15, "TGC": 0.40, "TGN": 0.40}
+  }
+}
+```
+
+The abbreviated example shows one enzyme. Real requests must include every enzyme returned by `/api/config`. Each profile is normalized to 100 percent by both the API adapter and model layer.
+
+## Tests
+
+From the repository root:
+
+```bash
+python -m unittest discover model_core/tests -v
+python -m unittest discover backend/tests -v
+node frontend/tests/distribution.test.js
+```
+
+## Regenerate preset data
+
+Generating an optional preset/offline matrix for every preset and promoter combination is computationally expensive:
+
+```bash
+python backend/generate_matrix.py
+```
+
+## Related repository
+
+The [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model) contains the complete scientific modeling work, including notebooks, research outputs, references, and models not required to run GlycoGarden. `model_core/` here is the reviewed runtime subset needed to make this software independently reproducible.
 
 ## License
-This repository is licensed under the [Apache License 2.0](LICENSE) — a permissive
-open-source license recommended for software (Creative Commons licenses are *not*
-intended for source code). You are free to use, modify, and distribute this software,
-provided you keep the license and attribution notices. If you prefer different terms
-for your own tool, you may replace this license, but it must remain an
-[OSI-approved open-source license](https://opensource.org/licenses).
+
+Licensed under the [Apache License 2.0](LICENSE).

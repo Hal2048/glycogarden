@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GlycoGarden Control Room · Fudan iGEM 2026</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="./vendor/vue.global.js"></script>
+  <script src="./vendor/echarts.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>GlycoGarden Control Room</h1>
+      <p>Interactive N-glycosylation profile simulator</p>
+    </header>
+
+    <main class="app-main">
+      <div v-if="loadingConfig" class="status">Loading simulator configuration…</div>
+      <div v-else-if="!config" class="status error" role="alert">{{ error }}</div>
+
+      <template v-else>
+        <section class="controls" aria-label="Simulation controls">
+          <fieldset class="control-group plain-fieldset">
+            <legend>Promoter strength</legend>
+            <div class="chips">
+              <button
+                v-for="p in config.promoterLevels"
+                :key="p.key"
+                type="button"
+                :class="{ active: selectedPromoter === p.key }"
+                :aria-pressed="selectedPromoter === p.key"
+                @click="selectPromoter(p.key)"
+              >{{ p.label }}</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="control-group plain-fieldset">
+            <legend>Enzyme distribution presets</legend>
+            <div class="chips preset-row">
+              <button
+                v-for="preset in config.enzymePresets"
+                :key="preset.key"
+                type="button"
+                :class="{ active: selectedPreset === preset.key }"
+                :aria-pressed="selectedPreset === preset.key"
+                :title="preset.description"
+                @click="applyPreset(preset.key)"
+              >{{ preset.label }}</button>
+              <span v-if="selectedPreset === 'custom'" class="custom-badge">Custom</span>
+            </div>
+            <button type="button" class="reset-btn" @click="resetAll">Reset all to baseline</button>
+          </fieldset>
+
+          <section class="control-group distribution-group" aria-labelledby="distribution-heading">
+            <div class="distribution-heading-row">
+              <div>
+                <h2 id="distribution-heading">Enzyme compartment distribution</h2>
+                <p>
+                  Edit one compartment and the unlocked remainder is redistributed proportionally.
+                  Each row always totals 100%.
+                </p>
+              </div>
+              <div class="compartment-legend" aria-label="Compartment colors">
+                <span v-for="compartment in config.compartments" :key="compartment" :class="`legend-${compartment.toLowerCase()}`">
+                  {{ compartment }}
+                </span>
+              </div>
+            </div>
+
+            <p class="group-note">
+              These ten controls represent base enzyme groups. Branch-specific GalT, SiaT, and GnT reaction aliases share their base group's localization profile.
+            </p>
+
+            <p v-if="inputError" class="inline-message error" role="alert">{{ inputError }}</p>
+
+            <article v-for="name in config.enzymeNames" :key="name" class="enzyme-card">
+              <div class="enzyme-card-header">
+                <h3>{{ name }}</h3>
+                <span class="total-badge">Total {{ profileTotal(name) }}</span>
+                <button type="button" class="enzyme-reset" @click="resetEnzyme(name)">Reset</button>
+              </div>
+
+              <div class="compartment-inputs">
+                <div v-for="compartment in config.compartments" :key="compartment" class="compartment-input">
+                  <label :for="`dist-${name}-${compartment}`">
+                    <span :class="`color-dot dot-${compartment.toLowerCase()}`"></span>
+                    {{ compartment }}
+                  </label>
+                  <div class="number-wrap">
+                    <input
+                      :id="`dist-${name}-${compartment}`"
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      inputmode="decimal"
+                      :value="displayPercentage(name, compartment)"
+                      :aria-label="`${name} ${compartment} percentage`"
+                      @change="commitCompartment(name, compartment, $event)"
+                      @keydown.enter="$event.target.blur()"
+                    />
+                    <span aria-hidden="true">%</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="lock-btn"
+                    :class="{ locked: distributionLocks[name][compartment] }"
+                    :aria-pressed="distributionLocks[name][compartment]"
+                    :aria-label="`${distributionLocks[name][compartment] ? 'Unlock' : 'Lock'} ${name} ${compartment}`"
+                    @click="toggleLock(name, compartment)"
+                  >{{ distributionLocks[name][compartment] ? 'Locked' : 'Lock' }}</button>
+                </div>
+              </div>
+
+              <div class="distribution-bar" :aria-label="`${name} compartment distribution`">
+                <span
+                  v-for="compartment in config.compartments"
+                  :key="compartment"
+                  :style="segmentStyle(name, compartment)"
+                  :title="`${compartment}: ${displayPercentage(name, compartment)}%`"
+                ></span>
+              </div>
+            </article>
+          </section>
+
+          <div v-if="resultStale" class="inline-message stale" role="status">
+            Controls changed after the last run. Run the simulation again to refresh the result.
+          </div>
+          <div v-if="cancelledMessage" class="inline-message stale" role="status">{{ cancelledMessage }}</div>
+          <div v-if="error" class="inline-message error" role="alert">{{ error }}</div>
+
+          <div class="control-group">
+            <button
+              type="button"
+              class="run-btn"
+              :disabled="computing"
+              @click="runSimulation"
+            >
+              {{ computing ? 'Computing steady-state model…' : (resultStale ? 'Run updated simulation' : 'Run simulation') }}
+            </button>
+            <button
+              v-if="computing"
+              type="button"
+              class="cancel-btn"
+              @click="cancelSimulation"
+            >Stop waiting</button>
+            <p class="compute-hint">
+              Custom distributions run the full ~7,500-glycoform model and may take up to two minutes.
+              Duplicate submissions are disabled while a run is active; identical completed runs are cached.
+            </p>
+          </div>
+        </section>
+
+        <section v-if="computing" class="status" role="status">
+          Running the glycosylation model. You can continue reviewing the controls while it computes.
+        </section>
+
+        <section v-if="result && !computing" class="results" :class="{ 'results-stale': resultStale }">
+          <div class="chart-section">
+            <h2>Top predicted glycoforms · {{ result.promoter }}</h2>
+            <div ref="chartRef" class="chart"></div>
+          </div>
+
+          <div class="table-section">
+            <table>
+              <thead>
+                <tr><th>Rank</th><th>Glycoform</th><th>Relative abundance</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in chartRows" :key="row.id">
+                  <td>{{ row.rank }}</td>
+                  <td>{{ row.label }}</td>
+                  <td>{{ formatPercent(row.value) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </template>
+    </main>
+
+    <footer class="app-footer">
+      <p>Fudan iGEM 2026 · GlycoGarden · <a href="https://gitlab.igem.org/2026/software/fudan/glycogarden">GitLab</a></p>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
