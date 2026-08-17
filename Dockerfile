@@ -15,4 +15,4 @@ COPY data data
 
 EXPOSE 5000
 
-CMD ["python", "backend/app.py"]
+CMD gunicorn --chdir backend --bind 0.0.0.0:${PORT:-5000} --timeout 300 --workers 1 app:app

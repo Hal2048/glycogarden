@@ -58,6 +58,12 @@ docker run --rm -p 5000:5000 glycogarden
 
 Then open <http://localhost:5000>.
 
+## Deploy the web application
+
+The repository includes a `render.yaml` Blueprint and a production Gunicorn entrypoint. Connect this public GitLab repository in Render and deploy the Blueprint to publish the complete Flask API, frontend, and model runtime as one web service.
+
+The health check uses `/api/config`. Live simulations can take up to several minutes, so the production server uses one worker and a five-minute request timeout to avoid duplicating the model in memory or terminating valid predictions early.
+
 ## Prediction API
 
 `POST /api/predict` requires a promoter level and the complete distribution of every configured enzyme. Retrieve the public configuration first with `GET /api/config`.

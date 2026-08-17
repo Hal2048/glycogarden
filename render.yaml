@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: glycogarden
+    runtime: docker
+    repo: https://gitlab.igem.org/2026/software/fudan/glycogarden.git
+    branch: main
+    plan: free
+    healthCheckPath: /api/config
+    autoDeployTrigger: commit
