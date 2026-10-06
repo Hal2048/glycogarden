@@ -32,16 +32,16 @@ class ReactionNetwork:
     def add_structure(self, glycan: Glycoform) -> int:
         """Adds a new structure and returns its unique ID; returns existing ID if already present."""
         if glycan in self._structure_to_id:
-            return self._structure_to_id[glycan]
+            return self.structures[self._structure_to_id[glycan]]
         struct_id = self._next_id
         self._next_id += 1
         self.structures[struct_id] = glycan
         self._structure_to_id[glycan] = struct_id
-        return struct_id
+        return glycan
 
     def generate_network(self, initial_structures: List[Glycoform], enzymes: List[Enzyme]):
         """Iteratively generates the entire network from initial structures by applying all rules."""
-        queue = [self.add_structure(s) for s in initial_structures]
+        queue = [self._structure_to_id[self.add_structure(s)] for s in initial_structures]
 
         while queue:
             current_id = queue.pop(0)
@@ -50,8 +50,8 @@ class ReactionNetwork:
                 continue
             for enzyme in enzymes:
                 if enzyme.condition(current_glycan):
-                    product_glycan = enzyme.product_struc(current_glycan)
-                    product_id = self.add_structure(product_glycan)
+                    product_glycan = self.add_structure(enzyme.product_struc(current_glycan))
+                    product_id = self._structure_to_id[product_glycan]
 
                     km_val = enzyme.Km * enzyme.Km_adjust(current_glycan)
 

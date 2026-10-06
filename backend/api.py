@@ -1,15 +1,16 @@
 """Model-facing API helpers for the GlycoGarden Software backend.
 
 This module loads the metabolic model once at import time and exposes
-functions to run it on demand for arbitrary promoter strengths and enzyme
-compartment distributions.
+functions to run it on demand for arbitrary enzyme compartment distributions
+and cell-physiology parameters (donor concentrations, residence time,
+cisterna volume, protein production rate).
 """
 
+import ast
 import sys
 from collections.abc import Mapping
 from collections import OrderedDict
 from copy import deepcopy
-from datetime import datetime, timezone
 from numbers import Real
 from pathlib import Path
 from threading import Lock
@@ -22,8 +23,7 @@ _model_dir = (_backend_dir.parent / "model_core").resolve()
 # ---------------------------------------------------------------------------
 # Load the metabolic model once at import time.
 # Building the reaction network is expensive, but solving the steady state is
-# the real bottleneck (~2 min per run). Reusing the network saves a few seconds
-# per prediction.
+# the real bottleneck. Reusing the network saves a few seconds per prediction.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(_model_dir))
 try:
@@ -31,27 +31,49 @@ try:
         COMPARTMENT_NAMES,
         DIST_MATRIX,
         DONOR_CONC,
+        ENZYME_RULES,
+        PROTEIN_PROD_RATE,
+        COMPARTMENT_VOLUME_SINGLE,
         TAU,
-        TOTAL_ENZYME_CONC,
+        _BASE_ENZYME_NAMES,
         build_enzyme_dist,
         normalize_dist_matrix,
     )
     from enzyme import build_enzymes
     from glycoform import Glycoform
     from golgi_model import GolgiModel
+    from iupac import krambeck_to_iupac
     from kinetics import KineticsCalculator
     from reaction import ReactionNetwork
 finally:
     sys.path.pop(0)
 
-_BASE_ENZYME_NAMES = list(TOTAL_ENZYME_CONC.keys())
+_BASE_ENZYME_NAMES = list(_BASE_ENZYME_NAMES)
+_N_COMPARTMENTS = len(COMPARTMENT_NAMES)
 
-PROMOTER_LEVELS = [
-    {"key": "low", "label": "Low", "factor": 0.5},
-    {"key": "base", "label": "Base", "factor": 1.0},
-    {"key": "elevated", "label": "Elevated", "factor": 1.5},
-    {"key": "high", "label": "High", "factor": 2.0},
-]
+# ---------------------------------------------------------------------------
+# Default physiology parameters (surfaced to the UI as editable controls).
+# ---------------------------------------------------------------------------
+DEFAULT_TAU = float(TAU[0])
+DEFAULT_COMPARTMENT_VOLUME = float(COMPARTMENT_VOLUME_SINGLE)
+DEFAULT_PROTEIN_PROD_RATE = float(PROTEIN_PROD_RATE)
+DEFAULT_DONOR_CONC = {name: float(value) for name, value in DONOR_CONC.items()}
+
+# Donors the user can tune. "H20" is a unit placeholder for hydrolysis
+# reactions (ManI/ManII) and stays fixed at 1.
+TUNABLE_DONORS = ("UDP-GlcNAc", "UDP-Gal", "CMP-NeuAc", "GDP-Fuc", "GDP-Man")
+
+# Sensible UI bounds for each tunable parameter.
+DONOR_BOUNDS = {
+    "UDP-GlcNAc": (100.0, 20000.0),
+    "UDP-Gal":    (100.0, 10000.0),
+    "CMP-NeuAc":  (50.0,  5000.0),
+    "GDP-Fuc":    (100.0, 10000.0),
+    "GDP-Man":    (100.0, 10000.0),
+}
+TAU_BOUNDS = (0.1, 30.0)
+COMPARTMENT_VOLUME_BOUNDS = (0.1, 20.0)
+PROTEIN_PROD_RATE_BOUNDS = (10.0, 10000.0)
 
 # Capture the original baseline distribution before anything mutates it.
 _BASELINE_DIST_MATRIX = normalize_dist_matrix(deepcopy(DIST_MATRIX))
@@ -62,51 +84,81 @@ _PREDICTION_CACHE_LIMIT = 32
 # ---------------------------------------------------------------------------
 # Build the reaction network once.
 # ---------------------------------------------------------------------------
-_enzymes = build_enzymes()
+_enzymes = build_enzymes(ENZYME_RULES)
 _network = ReactionNetwork()
 _initial_structures = [
-    Glycoform(9, 0, 0, 0, 0, 0, 0, 0, 0),
-    Glycoform(8, 0, 0, 0, 0, 0, 0, 0, 0),
+    Glycoform(2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+    Glycoform(2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0),
 ]
 _network.generate_network(_initial_structures, _enzymes)
 _n_structs = len(_network.structures)
 _kinetics = KineticsCalculator(_network)
-_initial_feed = np.zeros(_n_structs)
-_initial_feed[:2] = 0.5
 
 
-def _structure_label(glycoform) -> str:
-    fields = [
-        ("M", glycoform.man),
-        ("F", glycoform.fuc),
-        ("G", glycoform.gnb),
-        ("b1", glycoform.br1),
-        ("b2", glycoform.br2),
-        ("b3", glycoform.br3),
-        ("b4", glycoform.br4),
-        ("Ga", glycoform.gal),
-        ("S", glycoform.sia),
-    ]
-    parts = [f"{prefix}{value}" for prefix, value in fields if value > 0]
-    return " ".join(parts) if parts else "Empty"
+def _export_network_structures(path: Path) -> None:
+    """Persist the authoritative id -> glycoform table for label lookup.
+
+    The layout mirrors ``export_network`` in ``model_workplace/main.py``:
+    one line per structure, ``id<TAB>(12-tuple)``. The IUPAC label table
+    used by :func:`_build_structures` is built by reading this file back,
+    so the file is the single source of truth for id -> structure mapping.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("=" * 80 + "\n")
+        f.write("GlycoGarden Network Structures (auto-generated at startup)\n")
+        f.write(f"Total Structures: {len(_network.structures)}\n")
+        f.write("=" * 80 + "\n\n")
+        for idx, glycoform in _network.structures.items():
+            f.write(f"{idx}\t{tuple(glycoform)}\n")
+
+
+_NETWORK_STRUCTURES_PATH = _model_dir / "network_structures.txt"
+_export_network_structures(_NETWORK_STRUCTURES_PATH)
+
+_STRUCTURE_FIELDS = (
+    "man1", "man2", "man3", "fuc", "gnb",
+    "br1", "br2", "br3", "br4", "gal", "sia", "br_o",
+)
+
+
+def _read_structure_tuples(path: Path) -> dict[int, tuple]:
+    """Parse ``network_structures.txt`` into ``{id: 12-tuple}``.
+
+    This file is the single source of truth for the id -> glycoform mapping.
+    Every structure record served by the API is built by reading the tuple
+    from this file and running ``krambeck_to_iupac`` on it, so the label
+    displayed for a given id always reflects exactly what was persisted.
+    """
+    tuples: dict[int, tuple] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("=") or line.startswith("Total"):
+                continue
+            struct_id_str, _, tuple_str = line.partition("\t")
+            try:
+                struct_id = int(struct_id_str)
+                glycoform_tuple = ast.literal_eval(tuple_str)
+            except (ValueError, SyntaxError):
+                continue
+            tuples[struct_id] = glycoform_tuple
+    return tuples
 
 
 def _build_structures() -> list[dict]:
+    """Build the structure payload straight from ``network_structures.txt``.
+
+    For each id, the 12-tuple is read from the exported file and converted
+    with ``krambeck_to_iupac``; the 12 individual fields are also populated
+    from that same tuple so nothing comes from the in-memory network.
+    """
+    tuples = _read_structure_tuples(_NETWORK_STRUCTURES_PATH)
     structures = []
-    for idx, glycoform in _network.structures.items():
-        structures.append({
-            "id": int(idx),
-            "label": _structure_label(glycoform),
-            "man": int(glycoform.man),
-            "fuc": int(glycoform.fuc),
-            "gnb": int(glycoform.gnb),
-            "br1": int(glycoform.br1),
-            "br2": int(glycoform.br2),
-            "br3": int(glycoform.br3),
-            "br4": int(glycoform.br4),
-            "gal": int(glycoform.gal),
-            "sia": int(glycoform.sia),
-        })
+    for struct_id in sorted(tuples):
+        tup = tuples[struct_id]
+        record = {"id": struct_id, "label": krambeck_to_iupac(tup)}
+        record.update({field: int(value) for field, value in zip(_STRUCTURE_FIELDS, tup)})
+        structures.append(record)
     return structures
 
 
@@ -193,68 +245,73 @@ def _distribution_to_dist_matrix(enzyme_distribution) -> np.ndarray:
     return normalize_dist_matrix(matrix)
 
 
-def _shift_enzyme_mass(matrix: np.ndarray, from_compartments: list[int], to_compartments: list[int], fraction: float) -> np.ndarray:
-    """Shift a fraction of enzyme mass between compartment groups."""
-    m = matrix.copy().astype(float)
-    n_cols = m.shape[1]
-    for col in range(n_cols):
-        from_total = sum(m[row, col] for row in from_compartments)
-        if from_total == 0:
+def _validate_donor_concs(donor_concs) -> dict[str, float]:
+    """Validate user-supplied donor concentrations and merge over defaults."""
+    if donor_concs is None:
+        return {name: DEFAULT_DONOR_CONC[name] for name in TUNABLE_DONORS}
+    if not isinstance(donor_concs, Mapping):
+        raise ValueError("donorConcs must be an object mapping donor names to concentrations")
+
+    supplied = set(donor_concs)
+    unknown = sorted(supplied - set(TUNABLE_DONORS))
+    if unknown:
+        raise ValueError(f"Unknown donor names in donorConcs: {', '.join(unknown)}")
+
+    merged = {name: DEFAULT_DONOR_CONC[name] for name in TUNABLE_DONORS}
+    for name in TUNABLE_DONORS:
+        if name not in donor_concs:
             continue
-        shift = from_total * fraction
-        for row in from_compartments:
-            m[row, col] -= shift * (m[row, col] / from_total)
-        to_total = sum(m[row, col] for row in to_compartments)
-        if to_total == 0:
-            share = shift / len(to_compartments)
-            for row in to_compartments:
-                m[row, col] += share
-        else:
-            for row in to_compartments:
-                m[row, col] += shift * (m[row, col] / to_total)
-    return normalize_dist_matrix(m)
+        value = donor_concs[name]
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"Donor concentration for {name} must be numeric")
+        numeric = float(value)
+        if not np.isfinite(numeric) or numeric <= 0:
+            raise ValueError(
+                f"Donor concentration for {name} must be finite and positive"
+            )
+        merged[name] = numeric
+    return merged
 
 
-def get_enzyme_presets() -> list[dict]:
-    """Return named presets as complete, lossless four-compartment profiles."""
-    baseline = _BASELINE_DIST_MATRIX.copy()
-    cgc_biased = _shift_enzyme_mass(baseline, [2, 3], [0], 0.20)
-    tgn_biased = _shift_enzyme_mass(baseline, [0, 1], [3], 0.20)
-    uniform = np.full_like(baseline, 0.25)
-    return [
-        {
-            "key": "baseline",
-            "label": "Baseline",
-            "description": "Default compartment distribution from the model config.",
-            "distribution": _matrix_to_distribution(baseline),
-        },
-        {
-            "key": "cgc-biased",
-            "label": "CGC-biased",
-            "description": "Shift 20% of late-compartment enzyme mass toward the cis-Golgi.",
-            "distribution": _matrix_to_distribution(cgc_biased),
-        },
-        {
-            "key": "tgn-biased",
-            "label": "TGN-biased",
-            "description": "Shift 20% of early-compartment enzyme mass toward the trans-Golgi network.",
-            "distribution": _matrix_to_distribution(tgn_biased),
-        },
-        {
-            "key": "uniform",
-            "label": "Uniform",
-            "description": "Each compartment receives an equal 0.25 share of every enzyme group.",
-            "distribution": _matrix_to_distribution(uniform),
-        },
-    ]
+def _validate_scalar(value, name: str, bounds, default: float) -> float:
+    """Validate an optional positive scalar; fall back to the default."""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be numeric")
+    numeric = float(value)
+    if not np.isfinite(numeric) or numeric <= 0:
+        raise ValueError(f"{name} must be finite and positive")
+    lo, hi = bounds
+    if numeric < lo or numeric > hi:
+        raise ValueError(f"{name} must be within [{lo}, {hi}]")
+    return numeric
 
 
-def _run_model(promoter_factor: float, dist_matrix: np.ndarray, top_n: int = 15) -> dict:
+def _run_model(
+    dist_matrix: np.ndarray,
+    donor_concs: dict[str, float],
+    tau_scalar: float,
+    compartment_volume: float,
+    protein_prod_rate: float,
+    top_n: int = 15,
+) -> dict:
     """Run one steady-state prediction and return the top glycoforms."""
-    scaled_enzyme_conc = {name: value * promoter_factor for name, value in TOTAL_ENZYME_CONC.items()}
-    enzyme_dist = build_enzyme_dist(scaled_enzyme_conc, dist_matrix)
-    model = GolgiModel(_network, _kinetics, TAU, enzyme_dist, DONOR_CONC, _initial_feed)
-    final_concs = model.solve_damped(tol=1e-6, max_iter=50, damping=0.3, verbose=False)
+    tau = np.full(_N_COMPARTMENTS, tau_scalar)
+    enzyme_dist = build_enzyme_dist(dist_matrix)
+
+    # Build the full donor table (including the fixed H20 placeholder).
+    full_donor_conc = dict(DEFAULT_DONOR_CONC)
+    full_donor_conc.update(donor_concs)
+
+    # Total glycan concentration per compartment from physiology parameters
+    # (Krambeck-style): influx glycan mass = q_p * tau / V_cisterna.
+    tot_glycan_conc = protein_prod_rate * tau_scalar / compartment_volume
+    initial_feed = np.zeros(_n_structs)
+    initial_feed[:2] = 0.5 * tot_glycan_conc
+
+    model = GolgiModel(_network, _kinetics, tau, enzyme_dist, full_donor_conc, initial_feed)
+    final_concs = model.solve_sparse(tol=1e-6, max_iter=50, verbose=False)
 
     top, total = _extract_top(final_concs, top_n)
     return {
@@ -263,54 +320,93 @@ def _run_model(promoter_factor: float, dist_matrix: np.ndarray, top_n: int = 15)
     }
 
 
-def _run_model_queued(promoter_factor: float, dist_matrix: np.ndarray, top_n: int = 15) -> tuple[dict, bool]:
+def _run_model_queued(
+    dist_matrix: np.ndarray,
+    donor_concs: dict[str, float],
+    tau_scalar: float,
+    compartment_volume: float,
+    protein_prod_rate: float,
+    top_n: int = 15,
+) -> tuple[dict, bool]:
     """Serialize expensive solves and reuse a bounded set of identical results."""
     normalized = normalize_dist_matrix(dist_matrix)
-    key = (float(promoter_factor), int(top_n), normalized.astype(np.float64).tobytes())
+    donor_key = tuple(sorted(donor_concs.items()))
+    key = (
+        normalized.astype(np.float64).tobytes(),
+        donor_key,
+        float(tau_scalar),
+        float(compartment_volume),
+        float(protein_prod_rate),
+        int(top_n),
+    )
     with _PREDICTION_LOCK:
         if key in _PREDICTION_CACHE:
             cached = _PREDICTION_CACHE.pop(key)
             _PREDICTION_CACHE[key] = cached
             return deepcopy(cached), True
 
-        result = _run_model(promoter_factor, normalized, top_n)
+        result = _run_model(
+            normalized, donor_concs, tau_scalar, compartment_volume, protein_prod_rate, top_n
+        )
         _PREDICTION_CACHE[key] = deepcopy(result)
         while len(_PREDICTION_CACHE) > _PREDICTION_CACHE_LIMIT:
             _PREDICTION_CACHE.popitem(last=False)
         return result, False
 
 
-def predict(promoter_key: str, enzyme_distribution, top_n: int = 15) -> dict:
+def predict(
+    enzyme_distribution,
+    donor_concs=None,
+    tau=None,
+    compartment_volume=None,
+    protein_prod_rate=None,
+    top_n: int = 15,
+) -> dict:
     """
-    Run a real-time prediction for the given promoter level and enzyme distribution.
+    Run a real-time prediction for the given enzyme distribution and
+    cell-physiology parameters.
 
     Parameters
     ----------
-    promoter_key : str
-        One of 'low', 'base', 'elevated', 'high'.
     enzyme_distribution : dict[str, dict[str, float]]
         Complete named four-compartment distribution for every base enzyme.
+    donor_concs : dict[str, float], optional
+        Override defaults for any of the five tunable donors.
+    tau, compartment_volume, protein_prod_rate : float, optional
+        Residence time per cisterna (min), single-cisterna volume (uL), and
+        protein production rate (uM/min). Defaults come from config.py.
     top_n : int
         Number of top glycoforms to return.
 
     Returns
     -------
     dict
-        {'promoter': ..., 'enzymeDistribution': ..., 'total': ..., 'top': [...]}
+        The applied parameters plus ``total`` and ``top`` glycoforms.
     """
-    promoter = next((p for p in PROMOTER_LEVELS if p["key"] == promoter_key), None)
-    if promoter is None:
-        raise ValueError(f"Unknown promoter level: {promoter_key}")
-
     dist_matrix = _distribution_to_dist_matrix(enzyme_distribution)
-    result, cache_hit = _run_model_queued(promoter["factor"], dist_matrix, top_n)
+    donor = _validate_donor_concs(donor_concs)
+    tau_v = _validate_scalar(tau, "tau", TAU_BOUNDS, DEFAULT_TAU)
+    vol_v = _validate_scalar(
+        compartment_volume, "compartmentVolume", COMPARTMENT_VOLUME_BOUNDS,
+        DEFAULT_COMPARTMENT_VOLUME,
+    )
+    rate_v = _validate_scalar(
+        protein_prod_rate, "proteinProdRate", PROTEIN_PROD_RATE_BOUNDS,
+        DEFAULT_PROTEIN_PROD_RATE,
+    )
+
+    result, cache_hit = _run_model_queued(dist_matrix, donor, tau_v, vol_v, rate_v, top_n)
 
     top_ids = {item["id"] for item in result["top"]}
     top_structures = [s for s in _build_structures() if s["id"] in top_ids]
 
     return {
-        "promoter": promoter_key,
         "enzymeDistribution": _matrix_to_distribution(dist_matrix),
+        "donorConcs": donor,
+        "tau": tau_v,
+        "compartmentVolume": vol_v,
+        "proteinProdRate": rate_v,
+        "totGlycanConc": round(rate_v * tau_v / vol_v, 6),
         "total": result["total"],
         "top": result["top"],
         "structures": top_structures,
@@ -318,29 +414,22 @@ def predict(promoter_key: str, enzyme_distribution, top_n: int = 15) -> dict:
     }
 
 
-def generate_matrix(top_n: int = 15) -> dict:
-    """Generate the full pre-computed glycoform profile matrix (offline use)."""
-    enzyme_presets = get_enzyme_presets()
-    results = []
-    total_runs = len(PROMOTER_LEVELS) * len(enzyme_presets)
-    run_idx = 0
-    for promoter in PROMOTER_LEVELS:
-        for preset in enzyme_presets:
-            run_idx += 1
-            print(f"[{run_idx}/{total_runs}] Solving promoter={promoter['key']} preset={preset['key']}...")
-            run = predict(promoter["key"], preset["distribution"], top_n)
-            run["preset"] = preset["key"]
-            run.pop("structures", None)
-            results.append(run)
-            top_value = run["top"][0]["value"] if run["top"] else 0
-            print(f"  -> top abundance: {top_value}, total mass: {run['total']:.2f}")
-
+def get_config_payload() -> dict:
+    """Return the dashboard contract: defaults and bounds for every tunable."""
     return {
-        "schemaVersion": "2.0.0",
-        "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "topN": top_n,
-        "promoterLevels": PROMOTER_LEVELS,
-        "enzymePresets": [{"key": p["key"], "label": p["label"], "description": p["description"]} for p in enzyme_presets],
-        "structures": _build_structures(),
-        "results": results,
+        "enzymeNames": list(_BASE_ENZYME_NAMES),
+        "compartments": list(COMPARTMENT_NAMES),
+        "baselineDistribution": _matrix_to_distribution(_BASELINE_DIST_MATRIX),
+        "donorNames": list(TUNABLE_DONORS),
+        "donorDefaults": {name: DEFAULT_DONOR_CONC[name] for name in TUNABLE_DONORS},
+        "donorBounds": {name: list(bounds) for name, bounds in DONOR_BOUNDS.items()},
+        "tauDefault": DEFAULT_TAU,
+        "tauBounds": list(TAU_BOUNDS),
+        "compartmentVolumeDefault": DEFAULT_COMPARTMENT_VOLUME,
+        "compartmentVolumeBounds": list(COMPARTMENT_VOLUME_BOUNDS),
+        "proteinProdRateDefault": DEFAULT_PROTEIN_PROD_RATE,
+        "proteinProdRateBounds": list(PROTEIN_PROD_RATE_BOUNDS),
+        "totGlycanConcDefault": round(
+            DEFAULT_PROTEIN_PROD_RATE * DEFAULT_TAU / DEFAULT_COMPARTMENT_VOLUME, 6
+        ),
     }

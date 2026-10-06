@@ -1,6 +1,6 @@
 # GlycoGarden
 
-GlycoGarden is Fudan iGEM 2026's interactive simulator for exploring how promoter strength and Golgi-compartment enzyme localization affect predicted N-glycoform profiles.
+GlycoGarden is Fudan iGEM 2026's interactive simulator for exploring how Golgi-compartment enzyme localization and cell-physiology parameters (donor concentrations, residence time, cisterna volume, protein production rate) affect predicted N-glycoform profiles.
 
 This repository is self-contained: the browser interface, Flask API, precomputed data, and the model runtime required by the API are all included. The complete research notebooks and broader modeling record live in the separate [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model).
 
@@ -14,7 +14,7 @@ data/           Output location for optional precomputed preset results
 MODELING.md     Scientific modeling description
 ```
 
-The frontend calls `/api/config` and `/api/predict`. The backend validates and normalizes every enzyme's four-compartment distribution, then calls `model_core` to solve the steady-state glycosylation model.
+The frontend calls `/api/config` and `/api/predict`. The backend validates and normalizes every enzyme's four-compartment distribution plus the tunable physiology parameters, then calls `model_core` to solve the steady-state glycosylation model.
 
 ## Requirements
 
@@ -66,18 +66,21 @@ The health check uses `/api/config`. Live simulations can take up to several min
 
 ## Prediction API
 
-`POST /api/predict` requires a promoter level and the complete distribution of every configured enzyme. Retrieve the public configuration first with `GET /api/config`.
+`POST /api/predict` requires the complete distribution of every configured enzyme and accepts optional overrides for the physiology parameters. Retrieve the public configuration (defaults and bounds) first with `GET /api/config`.
 
 ```json
 {
-  "promoter": "base",
   "enzymeDistribution": {
     "ManI": {"CGC": 0.05, "MGC": 0.15, "TGC": 0.40, "TGN": 0.40}
-  }
+  },
+  "donorConcs": {"UDP-GlcNAc": 9200, "UDP-Gal": 3800, "CMP-NeuAc": 2400, "GDP-Fuc": 5000, "GDP-Man": 2000},
+  "tau": 5.56,
+  "compartmentVolume": 2.5,
+  "proteinProdRate": 1000
 }
 ```
 
-The abbreviated example shows one enzyme. Real requests must include every enzyme returned by `/api/config`. Each profile is normalized to 100 percent by both the API adapter and model layer.
+The abbreviated example shows one enzyme. Real requests must include every enzyme returned by `/api/config`. Each profile is normalized to 100 percent by both the API adapter and model layer. All physiology fields are optional; defaults come from `model_core/config.py`. The response echoes the applied parameters together with the derived `totGlycanConc = proteinProdRate · tau / compartmentVolume`.
 
 ## Tests
 
@@ -87,14 +90,6 @@ From the repository root:
 python -m unittest discover model_core/tests -v
 python -m unittest discover backend/tests -v
 node frontend/tests/distribution.test.js
-```
-
-## Regenerate preset data
-
-Generating an optional preset/offline matrix for every preset and promoter combination is computationally expensive:
-
-```bash
-python backend/generate_matrix.py
 ```
 
 ## Related repository

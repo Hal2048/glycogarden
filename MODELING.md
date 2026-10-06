@@ -35,13 +35,13 @@
 ## 2. 模型总体架构
 
 ```text
-main.py
+backend/api.py  (网络只构建一次，多次预测复用)
     │
-    ├── config.py          ← 参数：停留时间、酶浓度、供体浓度、酶分布矩阵
-    ├── enzyme.py          ← 酶规则：20 条酶反应规则
+    ├── config.py          ← 参数：生理参数、供体浓度、ENZYME_CONC、ENZYME_RULES、分布兼容层
+    ├── enzyme.py          ← build_enzymes(ENZYME_RULES)：22 条酶规则 → Enzyme 对象
     ├── reaction.py        ← BFS 生成反应网络
     ├── kinetics.py        ← 竞争抑制计算
-    └── golgi_model.py     ← 稳态求解器
+    └── golgi_model.py     ← 稳态求解器（默认 solve_sparse）
                               ↓
                          final_concs[n_structures, 4]
                               ↓
@@ -54,20 +54,21 @@ main.py
 
 ### 3.1 `glycoform.py` —— 糖链编码
 
-每种糖链用一个 9 元组表示：
+每种糖链用一个 12 元组表示：
 
 ```python
-(man, fuc, gnb, br1, br2, br3, br4, gal, sia)
+(man1, man2, man3, fuc, gnb, br1, br2, br3, br4, gal, sia, br_o)
 ```
 
 | 字段 | 含义 |
 |------|------|
-| `man` | 甘露糖数量 |
+| `man1`, `man2`, `man3` | 三股甘露糖分支上的甘露糖数量（总和为甘露糖总数） |
 | `fuc` | 岩藻糖数量 |
 | `gnb` | 平分型 GlcNAc |
 | `br1` ~ `br4` | 4 个分支上的 GlcNAc 状态 |
 | `gal` | 半乳糖总数 |
 | `sia` | 唾液酸总数 |
+| `br_o` | 酵母 Och1/Mnn9 分支的延伸计数 |
 
 每个 `Glycoform` 还维护两个集合：
 - `_consuming_reactions`：消耗该糖链的所有反应 ID
@@ -77,11 +78,11 @@ main.py
 
 ### 3.2 `enzyme.py` —— 酶反应规则
 
-定义了 20 条酶规则，每条规则包含：
+酶规则集中在 `config.ENZYME_RULES`（约 22 条，含 ManI/ManII 各底物专一性条目和酵母特异的 Och1/Mnn9），每条规则包含：
 
 ```python
 {
-    "name": "酶名",
+    "name": "酶名_底物",
     "condition": "反应条件表达式",
     "product_struc": "产物结构表达式",
     "cosubstrate": "糖供体",
@@ -92,7 +93,7 @@ main.py
 }
 ```
 
-`build_enzymes()` 把这些字符串表达式转换成 Python 函数对象。
+`build_enzymes(ENZYME_RULES)` 把这些字符串表达式转换成 Python 函数对象。规则名中的底物后缀（如 `ManI_M9`）在构建时映射到 `ENZYME_CONC` 里的具体浓度键（`ManI_9`），使每条反应都能正确查到它在各隔室的酶浓度。
 
 ### 3.3 `reaction.py` —— 反应网络生成（核心：BFS）
 
@@ -108,19 +109,23 @@ main.py
 
 ### 3.5 `golgi_model.py` —— 稳态求解
 
-把高尔基体抽象为 4 个串联 CSTR，建立稳态质量平衡方程，用 `scipy.optimize.root` 求解。
+把高尔基体抽象为 4 个串联 CSTR，建立稳态质量平衡方程。求解器有两条路径：
+
+- `solve` / `solve_damped`：基于 `scipy.optimize.root` 或带阻尼的 Picard 迭代，保留用于小网络调试。
+- `solve_sparse`（默认）：把每个酶的竞争项提升为辅助变量 d_e，与浓度 c 联立成扩展系统；雅可比矩阵稀疏且结构固定，使用 SuperLU 直接分解 + 裁剪/回退牛顿步。对约 11,000 结构、38,000 反应的网络，这一求解器明显快于旧的阻尼迭代。
 
 ### 3.6 `config.py` —— 参数配置
 
-集中管理所有可调参数，并提供 `build_enzyme_dist(total_enzyme_conc=None, dist_matrix=None)` 把总酶浓度和分布矩阵转换为每个区室的实际酶浓度。
+集中管理所有可调参数：
 
-Dashboard 按 10 个基础酶组接收 CGC、MGC、TGC、TGN 四区室的完整分布。`normalize_dist_matrix()` 会验证矩阵形状、有限数值、非负值和正的列总和，并按列归一化，因此每种酶的四区室比例严格合计为 1。`build_enzyme_dist()` 使用请求局部参数，不会为了单次预测修改 `TOTAL_ENZYME_CONC` 或 `DIST_MATRIX` 全局配置。
+- **细胞生理参数**：`PROTEIN_PROD_RATE`（蛋白质生成速率 µM/min）、`COMPARTMENT_VOLUME_SINGLE`（单个 cisterna 体积 µL）、`TAU`（每室驻留时间 min），以及由此推导的 `TOT_GLYCAN_CONC = PROTEIN_PROD_RATE · TAU / COMPARTMENT_VOLUME_SINGLE`（µM）。前端把这三个标量作为可编辑控件，并按同一公式实时显示总糖链浓度。
+- **供体浓度 `DONOR_CONC`**：UDP-GlcNAc、UDP-Gal、CMP-NeuAc、GDP-Fuc、GDP-Man，以及水解反应占位的 `H20 = 1`（用户不可调）。
+- **酶总浓度与分布 `ENZYME_CONC`**：以具体酶名（如 `ManI_9`、`GalT_Br2`）为键，每项 `[总浓度, [CGC, MGC, TGC, TGN] 分布比]`。
+- **兼容层**：dashboard 仍按 10 个基础酶组（ManI/ManII/FucT/GnTI/GnTII/GnTIII/GnTIV/GnTV/GalT/SiaT）接收四室分布。`_ENZYME_GROUP_MAP` 把 23 个具体酶名映射到基础组；`DIST_MATRIX` 是从 `ENZYME_CONC` 推导的 4×10 基线矩阵；`normalize_dist_matrix()` 校验形状、有限性、非负性和正的列和并按列归一化；`build_enzyme_dist(dist_matrix=None)` 把 4×10 基础矩阵展开成 `model_core` 需要的 `[{specific_name: concentration}, ...]` 格式。零浓度的酵母酶（Och1、Mnn9、GnTIII）不参与 UI 编辑，保持默认均匀分布。
 
-20 个具体反应酶名称由 10 个基础组展开；例如 GalT 和 SiaT 的各分支反应共享对应基础组的区室分布。这种展开不会改变“每个基础酶组四区室总量等于其总浓度”的守恒约束。
+### 3.7 `backend/api.py` —— 执行入口
 
-### 3.7 `main.py` —— 执行入口
-
-按顺序调用以上模块，输出 top 糖链。
+Flask 后端在 import 时构建一次反应网络，随后每次 `/api/predict` 只替换分布矩阵、供体浓度和生理参数并重新求解稳态，避免重复 BFS 建网。
 
 ---
 
@@ -271,8 +276,8 @@ for i, glycan in self.network.structures.items():
 
 实际运行中：
 - 初始：2 种（Man9、Man8）
-- 最终：约 **7,500 种结构**
-- 反应：约 **22,800 个**
+- 最终：约 **11,000 种结构**
+- 反应：约 **38,000 个**
 
 ### 4.5 BFS 的局限性
 
@@ -337,7 +342,7 @@ final_concs.shape == (n_structures, 4)
 | `DONOR_CONC` | config.py | 糖供体浓度 |
 | `TOTAL_ENZYME_CONC` | config.py | 10 类酶总浓度 |
 | `DIST_MATRIX` | config.py | 酶在 4 个区室的分布比例 |
-| 初始 feed | main.py | M9 和 M8 各 50% |
+| 初始 feed | `backend/api.py` | M9 和 M8 各 50%，总浓度 = `proteinProdRate · tau / compartmentVolume` |
 
 ### 6.2 输出
 
@@ -359,15 +364,15 @@ final_concs.shape == (n_structures, 4)
 
 实际请求必须包含配置接口返回的全部 10 个基础酶组。后端拒绝缺失或未知的酶/区室、布尔值、非数字、非有限数、负数和四项全零的分布，然后再次归一化并将实际采用的 `enzymeDistribution` 放入预测响应。
 
+除分布外，`/api/predict` 还接受四个可调的细胞生理参数：`donorConcs`（5 种可调供体）、`tau`（驻留时间，min）、`compartmentVolume`（单 cisterna 体积，µL）、`proteinProdRate`（蛋白质生成速率，µM/min）。后端用与 `config.py` 相同的公式 `totGlycanConc = proteinProdRate · tau / compartmentVolume` 计算总糖链浓度，并以此构造 M9/M8 初始 feed（各占 50%）。所有参数都有上下界校验，默认值与 `model_core/config.py` 保持一致。
+
 用户界面（`frontend/`）提供：
 
-- 启动子强度选择（4 级）；
+- 细胞生理参数卡片（τ、V、q 滑杆 + 数字输入；总糖链浓度实时显示，只读）；
+- 5 种供体浓度的数字输入；
 - CGC、MGC、TGC、TGN 四区室直接输入；
 - 按比例联动、区室锁定、单酶重置和全部重置；
-- Baseline、CGC-biased、TGN-biased、Uniform 完整矩阵预设；
 - 对应条件下的 top 糖链柱状图和表格。
-
-任意手动分布必须调用实时模型，不能由有限的预计算组合覆盖。`generate_matrix()` 仅生成启动子 × 预设的离线结果，当前格式版本为 `2.0.0`。
 
 ---
 
@@ -375,19 +380,18 @@ final_concs.shape == (n_structures, 4)
 
 ### 8.1 已完成的
 
-- 糖链编码方案确定
-- 20 条酶规则定义
+- 糖链编码方案确定（12 元组，含 man1/man2/man3 与 br_o）
+- 酶规则集中到 `ENZYME_RULES`（22 条）
 - BFS 反应网络生成
 - 竞争抑制计算
-- 稳态求解器框架
+- 稳态求解器框架 + 稀疏牛顿求解器
 - Software 四区室交互与严格分布校验
-- 请求局部的酶浓度/分布参数，不修改模型全局配置
+- 可调细胞生理参数（τ、V、q、供体浓度）与总糖链浓度实时推导
+- 请求局部的分布/生理参数，不修改模型全局配置
 
 ### 8.2 计算限制
 
-完整网络约有 7,500 种糖链结构，单次稳态求解可能需要约 1–2 分钟。因此页面在计算期间禁止重复提交，并在参数改变后将旧结果标记为过期。单个后端进程会串行执行求解，并缓存最近 32 个参数完全相同的已完成结果。页面的“停止等待”只中止浏览器请求，不会伪装成服务器端求解取消；服务器仍可能完成计算并写入缓存。分布式任务队列和跨进程缓存属于后续运行架构优化。
-
-旧版 `matrix.json` 使用 `1.0.0` schema 和 Early/Late bias，不能表达新的完整四区室预设。需要显式运行 `python backend/generate_matrix.py` 生成 `2.0.0` 数据；服务不会静默返回旧格式结果。
+完整网络约有 11,000 种糖链结构、38,000 个反应，单次稳态求解可能需要约 1–2 分钟。因此页面在计算期间禁止重复提交，并在参数改变后将旧结果标记为过期。单个后端进程会串行执行求解，并缓存最近 32 个参数完全相同的已完成结果。页面的“停止等待”只中止浏览器请求，不会伪装成服务器端求解取消；服务器仍可能完成计算并写入缓存。分布式任务队列和跨进程缓存属于后续运行架构优化。
 
 ---
 
@@ -395,11 +399,11 @@ final_concs.shape == (n_structures, 4)
 
 这个模型的核心思路是：
 
-1. **编码**：用 9 元组数字化每种糖链
-2. **规则**：用 20 条酶规则定义糖链如何转化
+1. **编码**：用 12 元组数字化每种糖链
+2. **规则**：用 `ENZYME_RULES` 中的 22 条酶规则定义糖链如何转化
 3. **BFS 建网**：从 M9/M8 出发，遍历所有 reachable 糖链和反应
 4. **动力学**：用修正 Michaelis-Menten 计算每个反应速率
-5. **稳态求解**：解 4-CSTR 质量平衡方程
+5. **稳态求解**：解 4-CSTR 质量平衡方程（默认稀疏牛顿求解器）
 6. **输出**：得到最终糖链分布
 
 BFS 是整个流程的枢纽：它把离散的酶规则和初始结构，扩展成完整的反应网络，为后续的动力学和稳态计算提供基础。

@@ -13,8 +13,24 @@ function formatPercent(value) {
   return `${(value * 100).toFixed(2)}%`
 }
 
+function formatConcentration(value) {
+  if (!Number.isFinite(value)) return '—'
+  if (value >= 1000) return value.toFixed(1)
+  if (value >= 1) return value.toFixed(2)
+  return value.toPrecision(3)
+}
+
 function cloneDistribution(distribution) {
   return JSON.parse(JSON.stringify(distribution || {}))
+}
+
+function defaultParams(config) {
+  return {
+    tau: config.tauDefault,
+    compartmentVolume: config.compartmentVolumeDefault,
+    proteinProdRate: config.proteinProdRateDefault,
+    donorConcs: { ...config.donorDefaults },
+  }
 }
 
 function normalizeProfile(profile, compartments) {
@@ -78,8 +94,7 @@ function makeChartRows(result) {
 createApp({
   setup() {
     const config = ref(null)
-    const selectedPromoter = ref('')
-    const selectedPreset = ref('baseline')
+    const params = ref(null)
     const enzymeDistribution = ref({})
     const distributionLocks = ref({})
     const result = ref(null)
@@ -94,6 +109,12 @@ createApp({
     let activeController = null
 
     const chartRows = computed(() => makeChartRows(result.value))
+
+    const totGlycanConc = computed(() => {
+      const p = params.value
+      if (!p) return NaN
+      return (p.proteinProdRate * p.tau) / p.compartmentVolume
+    })
 
     function emptyLocks() {
       return Object.fromEntries(config.value.enzymeNames.map(enzyme => [
@@ -119,13 +140,13 @@ createApp({
           formatter: params => {
             const p = Array.isArray(params) ? params[0] : params
             const row = rows[p.dataIndex]
-            return `${row.label}<br/>Rank ${row.rank}: ${formatPercent(p.value)}`
+            return `ID ${row.id}<br/>${row.label}<br/>Rank ${row.rank}: ${formatPercent(p.value)}`
           },
         },
         xAxis: {
           type: 'category',
-          data: rows.map(d => d.label),
-          axisLabel: { rotate: 45, interval: 0, fontSize: 10 },
+          data: rows.map(d => `#${d.id}`),
+          axisLabel: { interval: 0, fontSize: 11 },
         },
         yAxis: {
           type: 'value',
@@ -154,7 +175,7 @@ createApp({
         const res = await fetch(`${API_URL}/config`)
         if (!res.ok) throw new Error(`Failed to load config: ${res.status}`)
         config.value = await res.json()
-        selectedPromoter.value = config.value.promoterLevels[0]?.key || ''
+        params.value = defaultParams(config.value)
         enzymeDistribution.value = cloneDistribution(config.value.baselineDistribution)
         distributionLocks.value = emptyLocks()
       } catch (e) {
@@ -164,25 +185,12 @@ createApp({
       }
     }
 
-    function selectPromoter(key) {
-      if (selectedPromoter.value !== key) {
-        selectedPromoter.value = key
-        markResultsStale()
-      }
-    }
-
-    function applyPreset(presetKey) {
-      const preset = config.value?.enzymePresets.find(item => item.key === presetKey)
-      if (!preset) return
-      enzymeDistribution.value = cloneDistribution(preset.distribution)
+    function resetAll() {
+      enzymeDistribution.value = cloneDistribution(config.value.baselineDistribution)
       distributionLocks.value = emptyLocks()
-      selectedPreset.value = presetKey
+      params.value = defaultParams(config.value)
       inputError.value = ''
       markResultsStale()
-    }
-
-    function resetAll() {
-      applyPreset('baseline')
     }
 
     function resetEnzyme(enzymeName) {
@@ -194,7 +202,6 @@ createApp({
         ...distributionLocks.value,
         [enzymeName]: Object.fromEntries(config.value.compartments.map(name => [name, false])),
       }
-      selectedPreset.value = 'custom'
       inputError.value = ''
       markResultsStale()
     }
@@ -227,7 +234,6 @@ createApp({
         config.value.compartments,
       )
       enzymeDistribution.value = { ...enzymeDistribution.value, [enzymeName]: nextProfile }
-      selectedPreset.value = 'custom'
       inputError.value = ''
       markResultsStale()
     }
@@ -250,29 +256,40 @@ createApp({
       }
     }
 
+    function currentPayloadSignature() {
+      return JSON.stringify({
+        distribution: enzymeDistribution.value,
+        params: params.value,
+      })
+    }
+
     async function runSimulation() {
-      if (!selectedPromoter.value || computing.value) return
+      if (computing.value) return
       computing.value = true
       error.value = ''
       inputError.value = ''
       cancelledMessage.value = ''
       activeController = new AbortController()
       const requestDistribution = cloneDistribution(enzymeDistribution.value)
-      const requestSignature = JSON.stringify(requestDistribution)
+      const requestParams = JSON.parse(JSON.stringify(params.value))
+      const requestSignature = currentPayloadSignature()
       try {
         const res = await fetch(`${API_URL}/predict`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            promoter: selectedPromoter.value,
             enzymeDistribution: requestDistribution,
+            tau: requestParams.tau,
+            compartmentVolume: requestParams.compartmentVolume,
+            proteinProdRate: requestParams.proteinProdRate,
+            donorConcs: requestParams.donorConcs,
           }),
           signal: activeController.signal,
         })
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || `Prediction failed: ${res.status}`)
         result.value = data
-        const controlsChanged = requestSignature !== JSON.stringify(enzymeDistribution.value)
+        const controlsChanged = requestSignature !== currentPayloadSignature()
         if (!controlsChanged) {
           enzymeDistribution.value = cloneDistribution(data.enzymeDistribution)
         }
@@ -307,10 +324,20 @@ createApp({
       }
     })
 
+    // Any edit to the physiology parameters invalidates the displayed result.
+    watch(
+      () => params.value && {
+        tau: params.value.tau,
+        v: params.value.compartmentVolume,
+        q: params.value.proteinProdRate,
+        d: params.value.donorConcs,
+      },
+      () => markResultsStale(),
+    )
+
     return {
       config,
-      selectedPromoter,
-      selectedPreset,
+      params,
       enzymeDistribution,
       distributionLocks,
       result,
@@ -322,8 +349,7 @@ createApp({
       cancelledMessage,
       chartRef,
       chartRows,
-      selectPromoter,
-      applyPreset,
+      totGlycanConc,
       resetAll,
       resetEnzyme,
       toggleLock,
@@ -334,6 +360,7 @@ createApp({
       runSimulation,
       cancelSimulation,
       formatPercent,
+      formatConcentration,
     }
   },
 }).mount('#app')

@@ -1,9 +1,6 @@
 # Generated data
 
-This directory stores the optional precomputed `matrix.json` artifact produced by:
-
-```bash
-python backend/generate_matrix.py
-```
-
-GlycoGarden does not require that artifact for live predictions. If present, it must use schema version `2.0.0`.
+The previous `matrix.json` precomputed artifact (schema 2.0.0) was tied to the
+removed promoter-strength × enzyme-preset matrix and is no longer produced or
+served. Live predictions always call `/api/predict`; this directory is kept
+only as a placeholder for future offline artifacts.

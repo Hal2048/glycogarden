@@ -12,7 +12,7 @@
   <div id="app">
     <header class="app-header">
       <h1>GlycoGarden Control Room</h1>
-      <p>Interactive N-glycosylation profile simulator</p>
+      <p>Interactive platform for N-linked glycosylation result prediction</p>
     </header>
 
     <main class="app-main">
@@ -21,36 +21,145 @@
 
       <template v-else>
         <section class="controls" aria-label="Simulation controls">
-          <fieldset class="control-group plain-fieldset">
-            <legend>Promoter strength</legend>
-            <div class="chips">
-              <button
-                v-for="p in config.promoterLevels"
-                :key="p.key"
-                type="button"
-                :class="{ active: selectedPromoter === p.key }"
-                :aria-pressed="selectedPromoter === p.key"
-                @click="selectPromoter(p.key)"
-              >{{ p.label }}</button>
+          <section class="control-group physiology-group" aria-labelledby="physiology-heading">
+            <div class="physiology-heading-row">
+              <div>
+                <h2 id="physiology-heading">Cell physiology parameters</h2>
+                <p>These parameters control the total glycan influx and the reaction conditions in every cisterna.</p>
+              </div>
             </div>
-          </fieldset>
 
-          <fieldset class="control-group plain-fieldset">
-            <legend>Enzyme distribution presets</legend>
-            <div class="chips preset-row">
-              <button
-                v-for="preset in config.enzymePresets"
-                :key="preset.key"
-                type="button"
-                :class="{ active: selectedPreset === preset.key }"
-                :aria-pressed="selectedPreset === preset.key"
-                :title="preset.description"
-                @click="applyPreset(preset.key)"
-              >{{ preset.label }}</button>
-              <span v-if="selectedPreset === 'custom'" class="custom-badge">Custom</span>
+            <div class="param-grid">
+              <article class="param-card">
+                <header class="param-card-header">
+                  <h3>Residence time (τ)</h3>
+                  <span class="param-unit">min</span>
+                </header>
+                <div class="param-body">
+                  <input
+                    type="range"
+                    class="param-slider"
+                    :min="config.tauBounds[0]"
+                    :max="config.tauBounds[1]"
+                    step="0.01"
+                    v-model.number="params.tau"
+                    :aria-label="`Residence time per cisterna in minutes`"
+                  />
+                  <div class="number-wrap">
+                    <input
+                      type="number"
+                      :min="config.tauBounds[0]"
+                      :max="config.tauBounds[1]"
+                      step="0.01"
+                      inputmode="decimal"
+                      v-model.number="params.tau"
+                      aria-label="Residence time per cisterna"
+                    />
+                    <span aria-hidden="true">min</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="param-card">
+                <header class="param-card-header">
+                  <h3>Cisterna volume (V)</h3>
+                  <span class="param-unit">µL</span>
+                </header>
+                <div class="param-body">
+                  <input
+                    type="range"
+                    class="param-slider"
+                    :min="config.compartmentVolumeBounds[0]"
+                    :max="config.compartmentVolumeBounds[1]"
+                    step="0.01"
+                    v-model.number="params.compartmentVolume"
+                    aria-label="Single cisterna volume in microliters"
+                  />
+                  <div class="number-wrap">
+                    <input
+                      type="number"
+                      :min="config.compartmentVolumeBounds[0]"
+                      :max="config.compartmentVolumeBounds[1]"
+                      step="0.01"
+                      inputmode="decimal"
+                      v-model.number="params.compartmentVolume"
+                      aria-label="Single cisterna volume"
+                    />
+                    <span aria-hidden="true">µL</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="param-card">
+                <header class="param-card-header">
+                  <h3>Protein production rate (q)</h3>
+                  <span class="param-unit">µM/min</span>
+                </header>
+                <div class="param-body">
+                  <input
+                    type="range"
+                    class="param-slider"
+                    :min="config.proteinProdRateBounds[0]"
+                    :max="config.proteinProdRateBounds[1]"
+                    step="1"
+                    v-model.number="params.proteinProdRate"
+                    aria-label="Protein production rate in uM per minute"
+                  />
+                  <div class="number-wrap">
+                    <input
+                      type="number"
+                      :min="config.proteinProdRateBounds[0]"
+                      :max="config.proteinProdRateBounds[1]"
+                      step="1"
+                      inputmode="decimal"
+                      v-model.number="params.proteinProdRate"
+                      aria-label="Protein production rate"
+                    />
+                    <span aria-hidden="true">µM/min</span>
+                  </div>
+                </div>
+              </article>
+
+              <article class="param-card computed-card">
+                <header class="param-card-header">
+                  <h3>Total glycan concentration</h3>
+                  <span class="param-unit">µM</span>
+                </header>
+                <div class="computed-value" aria-live="polite">
+                  {{ formatConcentration(totGlycanConc) }}
+                </div>
+                <p class="computed-formula">= q · τ / V</p>
+              </article>
+            </div>
+          </section>
+
+          <section class="control-group donor-group" aria-labelledby="donor-heading">
+            <div class="donor-heading-row">
+              <div>
+                <h2 id="donor-heading">Donor concentrations</h2>
+                <p>Intra-Golgi nucleotide sugar levels that drive the transferase reactions.</p>
+              </div>
+            </div>
+            <div class="donor-grid">
+              <article v-for="name in config.donorNames" :key="name" class="donor-card">
+                <label :for="`donor-${name}`">{{ name }}</label>
+                <div class="number-wrap">
+                  <input
+                    :id="`donor-${name}`"
+                    type="number"
+                    :min="config.donorBounds[name][0]"
+                    :max="config.donorBounds[name][1]"
+                    step="1"
+                    inputmode="decimal"
+                    v-model.number="params.donorConcs[name]"
+                    :aria-label="`${name} concentration in micromolar`"
+                  />
+                  <span aria-hidden="true">µM</span>
+                </div>
+              </article>
             </div>
             <button type="button" class="reset-btn" @click="resetAll">Reset all to baseline</button>
-          </fieldset>
+          </section>
 
           <section class="control-group distribution-group" aria-labelledby="distribution-heading">
             <div class="distribution-heading-row">
@@ -146,7 +255,7 @@
               @click="cancelSimulation"
             >Stop waiting</button>
             <p class="compute-hint">
-              Custom distributions run the full ~7,500-glycoform model and may take up to two minutes.
+              Custom distributions may take up to two minutes.
               Duplicate submissions are disabled while a run is active; identical completed runs are cached.
             </p>
           </div>
@@ -158,18 +267,19 @@
 
         <section v-if="result && !computing" class="results" :class="{ 'results-stale': resultStale }">
           <div class="chart-section">
-            <h2>Top predicted glycoforms · {{ result.promoter }}</h2>
+            <h2>Top predicted glycoforms</h2>
             <div ref="chartRef" class="chart"></div>
           </div>
 
           <div class="table-section">
             <table>
               <thead>
-                <tr><th>Rank</th><th>Glycoform</th><th>Relative abundance</th></tr>
+                <tr><th>Rank</th><th>ID</th><th>Glycoform</th><th>Relative abundance</th></tr>
               </thead>
               <tbody>
                 <tr v-for="row in chartRows" :key="row.id">
                   <td>{{ row.rank }}</td>
+                  <td>#{{ row.id }}</td>
                   <td>{{ row.label }}</td>
                   <td>{{ formatPercent(row.value) }}</td>
                 </tr>
