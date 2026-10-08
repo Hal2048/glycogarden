@@ -94,7 +94,7 @@ node frontend/tests/distribution.test.js
 
 ## Related repository
 
-The [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model) contains the complete scientific modeling work, including notebooks, research outputs, references, and models not required to run GlycoGarden. `model_core/` here is the reviewed runtime subset needed to make this software independently reproducible.
+The [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model) contains the complete scientific modeling work, including the code, research outputs, references not required to run GlycoGarden. `model_core/` here is the reviewed runtime subset needed to make this software independently reproducible.
 
 ## License
 
