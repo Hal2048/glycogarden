@@ -341,21 +341,23 @@ ENZYME_RULES = [
 # ----------------------------------------------------------------------------
 # Dashboard compatibility layer
 #
-# The interactive dashboard exposes ten base enzyme groups and edits a single
-# 4-compartment distribution per group. Each specific enzyme in ENZYME_CONC
-# belongs to exactly one base group and shares its distribution profile with
-# the other members of that group, so a 4x10 base-enzyme matrix cleanly maps
-# back onto the 23 specific ENZYME_CONC entries.
+# The interactive dashboard exposes twelve base enzyme groups and edits a
+# single 4-compartment distribution plus a total concentration per group.
+# Each specific enzyme in ENZYME_CONC belongs to exactly one base group and
+# shares its distribution profile with the other members of that group, so a
+# 4x12 base-enzyme matrix cleanly maps back onto the 23 specific ENZYME_CONC
+# entries.
 # ----------------------------------------------------------------------------
 
 n_compartments = 4
 
 COMPARTMENT_NAMES = ("CGC", "MGC", "TGC", "TGN")
 
-# Ten base enzyme groups surfaced in the dashboard distribution editor.
+# Base enzyme groups surfaced in the dashboard distribution editor.
 _BASE_ENZYME_NAMES = [
     "ManI", "ManII", "FucT", "GnTI", "GnTII",
     "GnTIII", "GnTIV", "GnTV", "GalT", "SiaT",
+    "Och1", "Mnn9",
 ]
 
 # Maps each specific enzyme name in ENZYME_CONC to a base enzyme group.
@@ -371,11 +373,11 @@ _ENZYME_GROUP_MAP = {
     "GalT_Br3": "GalT", "GalT_Br4": "GalT",
     "SiaT_Br1": "SiaT", "SiaT_Br2": "SiaT",
     "SiaT_Br3": "SiaT", "SiaT_Br4": "SiaT",
+    "Och1": "Och1", "Mnn9": "Mnn9",
 }
 
-# Specific enzymes that are not surfaced in the dashboard (zero total
-# concentration, yeast-specific rules) keep their default distribution.
-_UNGROUPPED_ENZYMES = ("Och1", "Mnn9", "GnTIII")
+# Specific enzymes with no active rule keep their default distribution.
+_UNGROUPPED_ENZYMES = ("GnTIII",)
 
 
 def _compute_total_enzyme_conc() -> dict:
@@ -432,17 +434,22 @@ def normalize_dist_matrix(dist_matrix) -> np.ndarray:
     return matrix.copy() / column_totals
 
 
-def build_enzyme_dist(dist_matrix=None):
+def build_enzyme_dist(dist_matrix=None, concentrations=None):
     """
     Computes the concentration of each specific enzyme in every compartment.
 
     Parameters
     ----------
-    dist_matrix : optional, shape (4, 10)
+    dist_matrix : optional, shape (4, 12)
         Base-enzyme distribution matrix; column ``k`` is the four-compartment
         share of ``_BASE_ENZYME_NAMES[k]``. Each specific enzyme inherits its
         base group's profile. When omitted, the baseline matrix derived from
         ``ENZYME_CONC`` is used.
+    concentrations : optional, dict[str, float]
+        Total concentration override (uM) per base enzyme group. Members of a
+        group are scaled proportionally to their original totals; a group
+        whose original total is zero (e.g. Och1, Mnn9) assigns the override
+        directly to each of its members.
 
     Returns
     -------
@@ -456,7 +463,15 @@ def build_enzyme_dist(dist_matrix=None):
         base_matrix = normalize_dist_matrix(dist_matrix)
 
     base_index = {name: k for k, name in enumerate(_BASE_ENZYME_NAMES)}
+    base_totals = {name: 0.0 for name in _BASE_ENZYME_NAMES}
+    base_members = {name: [] for name in _BASE_ENZYME_NAMES}
+    for specific, (total, _ratios) in ENZYME_CONC.items():
+        base = _ENZYME_GROUP_MAP.get(specific)
+        if base is not None:
+            base_totals[base] += total
+            base_members[base].append(specific)
 
+    overrides = concentrations or {}
     enzyme_dist = []
     for j in range(n_compartments):
         comp_dict = {}
@@ -466,7 +481,15 @@ def build_enzyme_dist(dist_matrix=None):
                 share = base_matrix[j, base_index[base]]
             else:
                 share = default_ratios[j]
-            comp_dict[specific] = total * share
+            specific_total = total
+            if base in overrides:
+                base_total = base_totals[base]
+                if base_total > 0:
+                    specific_total = total * (overrides[base] / base_total)
+                else:
+                    n_members = max(1, len(base_members[base]))
+                    specific_total = overrides[base] / n_members
+            comp_dict[specific] = specific_total * share
         enzyme_dist.append(comp_dict)
     return enzyme_dist
 

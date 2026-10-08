@@ -30,6 +30,7 @@ function defaultParams(config) {
     compartmentVolume: config.compartmentVolumeDefault,
     proteinProdRate: config.proteinProdRateDefault,
     donorConcs: { ...config.donorDefaults },
+    enzymeConcs: { ...config.enzymeConcDefaults },
   }
 }
 
@@ -202,6 +203,13 @@ createApp({
         ...distributionLocks.value,
         [enzymeName]: Object.fromEntries(config.value.compartments.map(name => [name, false])),
       }
+      params.value = {
+        ...params.value,
+        enzymeConcs: {
+          ...params.value.enzymeConcs,
+          [enzymeName]: config.value.enzymeConcDefaults[enzymeName],
+        },
+      }
       inputError.value = ''
       markResultsStale()
     }
@@ -279,6 +287,7 @@ createApp({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             enzymeDistribution: requestDistribution,
+            enzymeConcs: requestParams.enzymeConcs,
             tau: requestParams.tau,
             compartmentVolume: requestParams.compartmentVolume,
             proteinProdRate: requestParams.proteinProdRate,
@@ -331,6 +340,7 @@ createApp({
         v: params.value.compartmentVolume,
         q: params.value.proteinProdRate,
         d: params.value.donorConcs,
+        e: params.value.enzymeConcs,
       },
       () => markResultsStale(),
     )

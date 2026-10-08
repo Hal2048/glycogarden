@@ -177,15 +177,29 @@
               </div>
             </div>
 
-            <p class="group-note">
-              These ten controls represent base enzyme groups. Branch-specific GalT, SiaT, and GnT reaction aliases share their base group's localization profile.
-            </p>
+
 
             <p v-if="inputError" class="inline-message error" role="alert">{{ inputError }}</p>
 
             <article v-for="name in config.enzymeNames" :key="name" class="enzyme-card">
               <div class="enzyme-card-header">
                 <h3>{{ name }}</h3>
+                <div class="enzyme-conc">
+                  <label :for="`conc-${name}`">Total conc.</label>
+                  <div class="number-wrap">
+                    <input
+                      :id="`conc-${name}`"
+                      type="number"
+                      :min="config.enzymeConcBounds[0]"
+                      :max="config.enzymeConcBounds[1]"
+                      step="0.01"
+                      inputmode="decimal"
+                      v-model.number="params.enzymeConcs[name]"
+                      :aria-label="`${name} total concentration in micromolar`"
+                    />
+                    <span aria-hidden="true">µM</span>
+                  </div>
+                </div>
                 <span class="total-badge">Total {{ profileTotal(name) }}</span>
                 <button type="button" class="enzyme-reset" @click="resetEnzyme(name)">Reset</button>
               </div>

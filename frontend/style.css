@@ -327,6 +327,23 @@ body {
   font-size: 1rem;
 }
 
+.enzyme-conc {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.enzyme-conc label {
+  color: #536c57;
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.enzyme-conc .number-wrap {
+  width: 7rem;
+}
+
 .enzyme-reset {
   margin-left: auto;
   border: 0;

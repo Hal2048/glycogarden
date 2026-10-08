@@ -89,7 +89,7 @@ class DistributionApiTests(unittest.TestCase):
                 compartment_volume=3.0,
                 protein_prod_rate=500.0,
             )
-        _, _, tau_v, vol_v, rate_v, _ = solver.call_args.args
+        _, _, _, tau_v, vol_v, rate_v, _ = solver.call_args.args
         self.assertEqual(tau_v, 7.5)
         self.assertEqual(vol_v, 3.0)
         self.assertEqual(rate_v, 500.0)

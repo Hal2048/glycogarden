@@ -35,6 +35,7 @@ try:
         PROTEIN_PROD_RATE,
         COMPARTMENT_VOLUME_SINGLE,
         TAU,
+        TOTAL_ENZYME_CONC,
         _BASE_ENZYME_NAMES,
         build_enzyme_dist,
         normalize_dist_matrix,
@@ -74,6 +75,9 @@ DONOR_BOUNDS = {
 TAU_BOUNDS = (0.1, 30.0)
 COMPARTMENT_VOLUME_BOUNDS = (0.1, 20.0)
 PROTEIN_PROD_RATE_BOUNDS = (10.0, 10000.0)
+ENZYME_CONC_BOUNDS = (0.0, 100.0)
+
+DEFAULT_ENZYME_CONC = {name: float(value) for name, value in TOTAL_ENZYME_CONC.items()}
 
 # Capture the original baseline distribution before anything mutates it.
 _BASELINE_DIST_MATRIX = normalize_dist_matrix(deepcopy(DIST_MATRIX))
@@ -288,9 +292,39 @@ def _validate_scalar(value, name: str, bounds, default: float) -> float:
     return numeric
 
 
+def _validate_enzyme_concs(enzyme_concs) -> dict[str, float]:
+    """Validate user-supplied enzyme concentrations and merge over defaults."""
+    if enzyme_concs is None:
+        return dict(DEFAULT_ENZYME_CONC)
+    if not isinstance(enzyme_concs, Mapping):
+        raise ValueError("enzymeConcs must be an object mapping enzyme names to concentrations")
+
+    supplied = set(enzyme_concs)
+    unknown = sorted(supplied - set(_BASE_ENZYME_NAMES))
+    if unknown:
+        raise ValueError(f"Unknown enzyme names in enzymeConcs: {', '.join(unknown)}")
+
+    merged = dict(DEFAULT_ENZYME_CONC)
+    for name in _BASE_ENZYME_NAMES:
+        if name not in enzyme_concs:
+            continue
+        value = enzyme_concs[name]
+        if isinstance(value, bool) or not isinstance(value, Real):
+            raise ValueError(f"Enzyme concentration for {name} must be numeric")
+        numeric = float(value)
+        if not np.isfinite(numeric) or numeric < 0:
+            raise ValueError(f"Enzyme concentration for {name} must be finite and non-negative")
+        lo, hi = ENZYME_CONC_BOUNDS
+        if numeric < lo or numeric > hi:
+            raise ValueError(f"Enzyme concentration for {name} must be within [{lo}, {hi}]")
+        merged[name] = numeric
+    return merged
+
+
 def _run_model(
     dist_matrix: np.ndarray,
     donor_concs: dict[str, float],
+    enzyme_concs: dict[str, float],
     tau_scalar: float,
     compartment_volume: float,
     protein_prod_rate: float,
@@ -298,7 +332,7 @@ def _run_model(
 ) -> dict:
     """Run one steady-state prediction and return the top glycoforms."""
     tau = np.full(_N_COMPARTMENTS, tau_scalar)
-    enzyme_dist = build_enzyme_dist(dist_matrix)
+    enzyme_dist = build_enzyme_dist(dist_matrix, enzyme_concs)
 
     # Build the full donor table (including the fixed H20 placeholder).
     full_donor_conc = dict(DEFAULT_DONOR_CONC)
@@ -323,6 +357,7 @@ def _run_model(
 def _run_model_queued(
     dist_matrix: np.ndarray,
     donor_concs: dict[str, float],
+    enzyme_concs: dict[str, float],
     tau_scalar: float,
     compartment_volume: float,
     protein_prod_rate: float,
@@ -331,9 +366,11 @@ def _run_model_queued(
     """Serialize expensive solves and reuse a bounded set of identical results."""
     normalized = normalize_dist_matrix(dist_matrix)
     donor_key = tuple(sorted(donor_concs.items()))
+    enzyme_key = tuple(sorted(enzyme_concs.items()))
     key = (
         normalized.astype(np.float64).tobytes(),
         donor_key,
+        enzyme_key,
         float(tau_scalar),
         float(compartment_volume),
         float(protein_prod_rate),
@@ -346,7 +383,8 @@ def _run_model_queued(
             return deepcopy(cached), True
 
         result = _run_model(
-            normalized, donor_concs, tau_scalar, compartment_volume, protein_prod_rate, top_n
+            normalized, donor_concs, enzyme_concs, tau_scalar, compartment_volume,
+            protein_prod_rate, top_n,
         )
         _PREDICTION_CACHE[key] = deepcopy(result)
         while len(_PREDICTION_CACHE) > _PREDICTION_CACHE_LIMIT:
@@ -357,6 +395,7 @@ def _run_model_queued(
 def predict(
     enzyme_distribution,
     donor_concs=None,
+    enzyme_concs=None,
     tau=None,
     compartment_volume=None,
     protein_prod_rate=None,
@@ -372,6 +411,8 @@ def predict(
         Complete named four-compartment distribution for every base enzyme.
     donor_concs : dict[str, float], optional
         Override defaults for any of the five tunable donors.
+    enzyme_concs : dict[str, float], optional
+        Override defaults for the total concentration (uM) of any base enzyme.
     tau, compartment_volume, protein_prod_rate : float, optional
         Residence time per cisterna (min), single-cisterna volume (uL), and
         protein production rate (uM/min). Defaults come from config.py.
@@ -385,6 +426,7 @@ def predict(
     """
     dist_matrix = _distribution_to_dist_matrix(enzyme_distribution)
     donor = _validate_donor_concs(donor_concs)
+    enzymes = _validate_enzyme_concs(enzyme_concs)
     tau_v = _validate_scalar(tau, "tau", TAU_BOUNDS, DEFAULT_TAU)
     vol_v = _validate_scalar(
         compartment_volume, "compartmentVolume", COMPARTMENT_VOLUME_BOUNDS,
@@ -395,13 +437,14 @@ def predict(
         DEFAULT_PROTEIN_PROD_RATE,
     )
 
-    result, cache_hit = _run_model_queued(dist_matrix, donor, tau_v, vol_v, rate_v, top_n)
+    result, cache_hit = _run_model_queued(dist_matrix, donor, enzymes, tau_v, vol_v, rate_v, top_n)
 
     top_ids = {item["id"] for item in result["top"]}
     top_structures = [s for s in _build_structures() if s["id"] in top_ids]
 
     return {
         "enzymeDistribution": _matrix_to_distribution(dist_matrix),
+        "enzymeConcs": enzymes,
         "donorConcs": donor,
         "tau": tau_v,
         "compartmentVolume": vol_v,
@@ -420,6 +463,8 @@ def get_config_payload() -> dict:
         "enzymeNames": list(_BASE_ENZYME_NAMES),
         "compartments": list(COMPARTMENT_NAMES),
         "baselineDistribution": _matrix_to_distribution(_BASELINE_DIST_MATRIX),
+        "enzymeConcDefaults": dict(DEFAULT_ENZYME_CONC),
+        "enzymeConcBounds": list(ENZYME_CONC_BOUNDS),
         "donorNames": list(TUNABLE_DONORS),
         "donorDefaults": {name: DEFAULT_DONOR_CONC[name] for name in TUNABLE_DONORS},
         "donorBounds": {name: list(bounds) for name, bounds in DONOR_BOUNDS.items()},

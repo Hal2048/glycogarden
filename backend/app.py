@@ -46,6 +46,7 @@ def handle_predict():
         result = predict(
             data['enzymeDistribution'],
             donor_concs=data.get('donorConcs'),
+            enzyme_concs=data.get('enzymeConcs'),
             tau=data.get('tau'),
             compartment_volume=data.get('compartmentVolume'),
             protein_prod_rate=data.get('proteinProdRate'),

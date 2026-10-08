@@ -13,9 +13,9 @@ import config
 
 class DistributionConfigTests(unittest.TestCase):
     def test_normalizes_each_enzyme_column(self):
-        matrix = config.DIST_MATRIX * np.arange(1, 11)
+        matrix = config.DIST_MATRIX * np.arange(1, len(config._BASE_ENZYME_NAMES) + 1)
         normalized = config.normalize_dist_matrix(matrix)
-        np.testing.assert_allclose(normalized.sum(axis=0), np.ones(10))
+        np.testing.assert_allclose(normalized.sum(axis=0), np.ones(len(config._BASE_ENZYME_NAMES)))
         np.testing.assert_allclose(normalized, config.DIST_MATRIX)
 
     def test_default_call_does_not_mutate_model_configuration(self):
@@ -61,13 +61,14 @@ class DistributionConfigTests(unittest.TestCase):
                 )
 
     def test_rejects_invalid_matrices(self):
+        n = len(config._BASE_ENZYME_NAMES)
         invalid_matrices = [
-            np.ones((3, 10)),
-            np.full((4, 10), np.nan),
-            np.full((4, 10), np.inf),
-            -np.ones((4, 10)),
-            np.column_stack([np.zeros(4), np.ones((4, 9))]),
-            [["not-a-number"] * 10] * 4,
+            np.ones((3, n)),
+            np.full((4, n), np.nan),
+            np.full((4, n), np.inf),
+            -np.ones((4, n)),
+            np.column_stack([np.zeros(4), np.ones((4, n - 1))]),
+            [["not-a-number"] * n] * 4,
         ]
         for matrix in invalid_matrices:
             with self.subTest(matrix=np.asarray(matrix).shape):
