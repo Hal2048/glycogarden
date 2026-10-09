@@ -1,6 +1,6 @@
 # GlycoDesigner
 
-GlycoDesigner is a interactive simulator, part of Fudan iGEM 2026's GlycoGarden. It aims to explore how Golgi-compartment enzyme localization and cell-physiology parameters (donor concentrations, residence time, cisterna volume, protein production rate) affect predicted N-glycoform profiles.
+GlycoDesigner is an interactive simulator from Fudan iGEM 2026. It aims to explore how Golgi-compartment enzyme localization and cell-physiology parameters (donor concentrations, residence time, cisterna volume, protein production rate) affect predicted N-glycoform profiles.
 
 This repository is self-contained: the browser interface, Flask API, precomputed data, and the model runtime required by the API are all included. The complete research notebooks and broader modeling record live in the separate [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model).
 
@@ -52,8 +52,8 @@ Open <http://localhost:5000>. No second repository or external model path is req
 ## Run with Docker
 
 ```bash
-docker build -t glycogarden .
-docker run --rm -p 5000:5000 glycogarden
+docker build -t glycodesigner .
+docker run --rm -p 5000:5000 glycodesigner
 ```
 
 Then open <http://localhost:5000>.
@@ -94,7 +94,7 @@ node frontend/tests/distribution.test.js
 
 ## Related repository
 
-The [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model) contains the complete scientific modeling work, including the code, research outputs, references not required to run GlycoGarden. `model_core/` here is the reviewed runtime subset needed to make this software independently reproducible.
+The [Fudan model repository](https://gitlab.igem.org/2026/software/fudan/model/-/tree/main/glycosylation-model) contains the complete scientific modeling work, including the code, research outputs, references not required to run GlycoDesigner. `model_core/` here is the reviewed runtime subset needed to make this software independently reproducible.
 
 ## License
 

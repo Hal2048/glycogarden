@@ -1,4 +1,4 @@
-"""Model-facing API helpers for the GlycoGarden Software backend.
+"""Model-facing API helpers for the GlycoDesigner Software backend.
 
 This module loads the metabolic model once at import time and exposes
 functions to run it on demand for arbitrary enzyme compartment distributions
@@ -109,7 +109,7 @@ def _export_network_structures(path: Path) -> None:
     """
     with open(path, "w", encoding="utf-8") as f:
         f.write("=" * 80 + "\n")
-        f.write("GlycoGarden Network Structures (auto-generated at startup)\n")
+        f.write("GlycoDesigner Network Structures (auto-generated at startup)\n")
         f.write(f"Total Structures: {len(_network.structures)}\n")
         f.write("=" * 80 + "\n\n")
         for idx, glycoform in _network.structures.items():

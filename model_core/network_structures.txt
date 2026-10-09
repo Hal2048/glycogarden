@@ -1,5 +1,5 @@
 ================================================================================
-GlycoGarden Network Structures (auto-generated at startup)
+GlycoDesigner Network Structures (auto-generated at startup)
 Total Structures: 11355
 ================================================================================
 

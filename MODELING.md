@@ -1,4 +1,4 @@
-# GlycoGarden 糖基化模型建模思路
+# GlycoDesigner 糖基化模型建模思路
 
 > 本文档基于 `model_core/` 中的代码，说明 N-糖基化代谢稳态模型的建模思想、数据流、BFS 网络生成机制以及当前状态。完整研究记录位于 Fudan 2026 的独立 Model 仓库。
 
